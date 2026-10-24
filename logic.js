@@ -303,6 +303,13 @@
     return out;
   }
 
+  // Entradas activas cuyo último intento fue un fallo, las más falladas primero.
+  function lastFailed(activeItems, stats) {
+    return activeItems
+      .filter(it => { const s = stats[it.id]; return s && s.recent && s.recent.length && s.recent[s.recent.length - 1] === false; })
+      .sort((a, b) => (stats[b.id].fails - stats[a.id].fails));
+  }
+
   // Elige las preguntas de una sesión: primero las que no han salido hoy.
   function pickSession(activeItems, askedToday, size, rand) {
     rand = rand || Math.random;
@@ -322,7 +329,7 @@
   const api = {
     MAIN_GOAL, RESCUE_GOAL, normBase, stripAccents, editDistance, compareOne, checkAnswer,
     diffMarks, localDate, localDateTime, addDays, summarizeDay, groupByDay, daysTable,
-    streaks, itemStats, pickSession, applyAnswer, isMastered, dayRow, statsFromEvents
+    streaks, itemStats, pickSession, applyAnswer, isMastered, dayRow, statsFromEvents, lastFailed
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Logic = api;

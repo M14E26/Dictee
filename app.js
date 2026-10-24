@@ -172,7 +172,7 @@
     const run = state.run;
     const n = activeItems().length;
     const primary = run
-      ? `<button class="btn btn-primary" data-act="continue">Continuar ${run.kind === 'main' ? '' : 'repaso '}(${run.idx + (run.answered ? 1 : 0)} de ${run.items.length})</button>`
+      ? `<button class="btn btn-primary" data-act="continue">Continuar ${run.kind === 'main' ? '' : run.kind === 'practice' ? 'últimos fallos ' : 'repaso '}(${run.idx + (run.answered ? 1 : 0)} de ${run.items.length})</button>`
       : `<button class="btn btn-primary" data-act="start" ${n ? '' : 'disabled'}>${sum.sessions.length ? 'Nueva sesión' : 'Empezar sesión'}</button>`;
     const discard = run
       ? `<button class="btn btn-quiet" data-act="discard">${run.kind === 'main' ? 'Empezar de nuevo' : 'Dejar el repaso'}</button>` : '';
@@ -263,6 +263,19 @@
     focusAnswer();
   }
 
+  // Repaso libre de las entradas cuyo último intento fue un fallo. No cuenta para el día.
+  function startPractice() {
+    if (state.run) return;
+    const items = L.lastFailed(activeItems(), state.stats)
+      .map(it => ({ id: it.id, es: it.es, fr: it.fr, alts: it.alts || [], note: it.note || '', s: 0 }));
+    if (!items.length) return;
+    for (let i = items.length - 1; i > 0; i--) { const k = Math.floor(Math.random() * (i + 1)); [items[i], items[k]] = [items[k], items[i]]; }
+    state.run = { date: today(), kind: 'practice', s: 0, round: 0, items, idx: 0, hits: 0, answered: null };
+    save(K.run, state.run);
+    go('quiz');
+    focusAnswer();
+  }
+
   function focusAnswer() {
     const el = document.getElementById('answer');
     if (el && !el.readOnly) el.focus({ preventScroll: true });
@@ -278,14 +291,15 @@
       u: uid(), t: L.localDateTime(), d: run.date, s: item.s, r: run.kind === 'main' ? 0 : run.round,
       n: run.kind === 'main' ? run.items.length : 0, id: item.id, a: text.trim(), res: result.status
     };
-    state.events.push(e);
-    save(K.events, state.events);
-
-    // Estadísticas acumuladas: la fila de la entrada y la del día
+    // Estadísticas de la entrada: siempre. Las del día: solo sesiones y repasos del día, no la práctica libre.
     L.applyAnswer(state.stats, item.id, result.status !== 'I', run.date);
     state.dirty.stats[item.id] = (state.dirty.stats[item.id] || 0) + 1;
-    const row = L.dayRow(state.events.filter(x => x.d === run.date), run.date, state.days[run.date]);
-    if (row) { state.days[run.date] = row; state.dirty.days[run.date] = (state.dirty.days[run.date] || 0) + 1; }
+    if (run.kind !== 'practice') {
+      state.events.push(e);
+      save(K.events, state.events);
+      const row = L.dayRow(state.events.filter(x => x.d === run.date), run.date, state.days[run.date]);
+      if (row) { state.days[run.date] = row; state.dirty.days[run.date] = (state.dirty.days[run.date] || 0) + 1; }
+    }
     save(K.stats, state.stats); save(K.days, state.days); save(K.dirty, state.dirty);
 
     if (result.status !== 'I') run.hits++;
@@ -366,7 +380,9 @@
     const total = run.items.length;
     const label = run.kind === 'main'
       ? `Pregunta ${run.idx + 1} de ${total}`
-      : `Repaso ${run.round} · ${run.idx + 1} de ${total}`;
+      : run.kind === 'practice'
+        ? `Últimos fallos · ${run.idx + 1} de ${total}`
+        : `Repaso ${run.round} · ${run.idx + 1} de ${total}`;
     const done = run.idx + (ans ? 1 : 0);
 
     $app.innerHTML = `
@@ -416,6 +432,7 @@
   function renderSummary() {
     const lr = state.lastRun;
     if (!lr) { go('home'); return; }
+    if (lr.kind === 'practice') { renderPracticeSummary(lr); return; }
     const sum = todaySummary();
     const st = dayStatusText(sum);
     let head;
@@ -448,6 +465,28 @@
     `;
   }
 
+  function renderPracticeSummary(lr) {
+    const left = L.lastFailed(activeItems(), state.stats).length;
+    $app.innerHTML = `
+      <div class="topbar">
+        <button class="icon-btn" data-act="home" aria-label="Volver al inicio">${ICON.back} Inicio</button>
+        <span></span>
+      </div>
+      <p class="prompt-hint">Repaso de últimos fallos terminado</p>
+      <p class="score-big">${lr.hits}<small> / ${lr.total}</small></p>
+      <p class="score-pct">${lr.hits === 1 ? 'Has corregido 1 frase' : 'Has corregido ' + lr.hits + ' frases'}.</p>
+      <div class="day-box ${left ? 'not' : 'done'}">
+        <h3>${left ? (left === 1 ? 'Te queda 1 fallo' : 'Te quedan ' + left + ' fallos') : 'No te queda ningún fallo'}</h3>
+        <p>${left ? 'Son las frases que has vuelto a fallar. Puedes repasarlas otra vez.' : 'Has acertado todas las que tenías falladas.'} Este repaso no cuenta para completar el día.</p>
+      </div>
+      <div class="stack home-actions">
+        ${left ? `<button class="btn btn-primary" data-act="practice">Repasar los que quedan (${left})</button>` : ''}
+        <button class="btn ${left ? '' : 'btn-primary'}" data-act="stats">Ver estadísticas</button>
+        <button class="btn btn-quiet" data-act="home">Volver al inicio</button>
+      </div>
+    `;
+  }
+
   // ---------- Estadísticas ----------
   const MONTHS = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
 
@@ -474,6 +513,10 @@
         <div class="tile"><div class="meta-num">${streak.current}</div><div class="meta-lbl">racha actual</div></div>
         <div class="tile"><div class="meta-num">${streak.best}</div><div class="meta-lbl">racha máxima</div></div>
       </div>
+
+      <section class="section practice">
+        ${practiceHtml()}
+      </section>
 
       <section class="section" aria-label="Calendario">
         <h2>Calendario</h2>
@@ -503,6 +546,20 @@
       </section>
     `;
     wireChart();
+  }
+
+  function practiceHtml() {
+    const n = L.lastFailed(activeItems(), state.stats).length;
+    if (state.run) {
+      return `<button class="btn btn-primary" data-act="continue">Continuar lo que tienes a medias</button>
+        <p class="help">Termina o descarta la sesión en curso para repasar tus últimos fallos.</p>`;
+    }
+    if (!n) {
+      return `<button class="btn" disabled>Repasar mis últimos fallos</button>
+        <p class="help">No tienes ninguna frase con el último intento fallado.</p>`;
+    }
+    return `<button class="btn btn-primary" data-act="practice">Repasar mis últimos fallos (${n})</button>
+      <p class="help">Las frases que fallaste la última vez que te salieron. No cuenta para completar el día.</p>`;
   }
 
   function calendarHtml(days) {
@@ -774,6 +831,7 @@
       case 'start': startSession(); break;
       case 'continue': go('quiz'); focusAnswer(); break;
       case 'review': startReview(); break;
+      case 'practice': startPractice(); break;
       case 'skip': submitAnswer(''); break;
       case 'exit':
         // Salir sin haber respondido ninguna: no tiene sentido guardarla
