@@ -100,14 +100,17 @@ button { color: inherit; }
   text-align: center;
   touch-action: manipulation;
 }
-.btn:active { border-bottom-width: 2px; transform: translateY(3px); }
+.btn { transition: transform .06s ease, border-bottom-width .06s ease, filter .06s ease, background-color .06s ease; }
+/* Botón pulsado: se hunde (pierde el relieve) y se oscurece un poco */
+.btn:active, .btn.is-pressed { border-bottom-width: 2px; transform: translateY(3px); filter: brightness(.93); }
+.btn[disabled].is-pressed, .btn[disabled]:active { transform: none; border-bottom-width: 5px; filter: none; }
 .btn-primary {
   background: var(--go); border-color: var(--go); color: var(--go-ink);
   border-bottom-color: var(--go-edge);
   text-transform: uppercase; letter-spacing: .06em; font-size: 16px;
 }
 .btn-quiet { border-color: transparent; background: transparent; color: var(--ink-soft); min-height: 44px; border-bottom-width: 2px; }
-.btn-quiet:active { transform: none; }
+.btn-quiet:active, .btn-quiet.is-pressed { transform: scale(.97); filter: none; background: var(--line); border-color: var(--line); }
 .btn[disabled] { opacity: .45; cursor: default; }
 .btn-row { display: flex; gap: 10px; }
 .btn-row > .btn { flex: 1; }
@@ -146,7 +149,8 @@ button { color: inherit; }
 
 .home-actions { margin-top: auto; padding-top: 8px; }
 .sync-line { font-size: 14px; color: var(--ink-soft); text-align: center; margin-top: 16px; }
-.sync-line button { background: none; border: 0; color: var(--ink); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; padding: 6px; font-size: 14px; font-weight: 600; }
+.sync-line button { background: none; border: 0; color: var(--ink); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; padding: 6px 8px; font-size: 14px; font-weight: 600; border-radius: 8px; transition: background-color .06s ease, transform .06s ease; }
+.sync-line button:active, .sync-line button.is-pressed { background: var(--line); transform: scale(.95); }
 .sync-error { color: var(--red); }
 
 /* ---------- Pregunta ---------- */
@@ -260,3 +264,16 @@ mark.extra { color: var(--red); text-decoration: line-through 2px; }
 .danger { color: var(--red); }
 .toggle { display: flex; align-items: center; gap: 12px; font-weight: 600; min-height: 48px; cursor: pointer; }
 .toggle input { width: 24px; height: 24px; accent-color: var(--go); flex: none; margin: 0; }
+.num-row { display: flex; align-items: center; gap: 12px; }
+.num-input { width: 96px; flex: none; font-size: 20px; font-weight: 700; text-align: center; }
+
+/* Botones de icono, calendario y casillas: un fondo al pulsar */
+.icon-btn { transition: background-color .06s ease, transform .06s ease; }
+button.icon-btn:active, button.icon-btn.is-pressed { background: var(--line); transform: scale(.92); }
+.toggle { border-radius: 12px; transition: background-color .06s ease; margin-inline: -8px; padding-inline: 8px; }
+.toggle:active, .toggle.is-pressed { background: var(--line); }
+@media (prefers-reduced-motion: reduce) {
+  .btn, .icon-btn, .sync-line button { transition: none; }
+  .btn:active, .btn.is-pressed, .btn-quiet.is-pressed, button.icon-btn.is-pressed, .sync-line button.is-pressed { transform: none; }
+}
+.btn:not(.btn-primary):not(.btn-quiet):active, .btn:not(.btn-primary):not(.btn-quiet).is-pressed { filter: none; background: var(--line); }

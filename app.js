@@ -2,7 +2,7 @@
 (function () {
   'use strict';
   const L = window.Logic;
-  const SESSION_SIZE = 25;
+  const DEFAULT_SESSION_SIZE = 50;
   const $app = document.getElementById('app');
 
   // ---------- Vocabulario de ejemplo (el mismo que crea el script del Sheet) ----------
@@ -83,11 +83,17 @@
   save(K.events, state.events);
 
   if (state.run && state.run.date !== today()) { state.run = null; save(K.run, null); }
+  // Una sesión que no has empezado a responder no se guarda: la próxima se elige con el tamaño actual.
+  if (state.run && state.run.idx === 0 && !state.run.answered) { state.run = null; save(K.run, null); }
 
   // ---------- Vibración ----------
   // Android: vibración real. iPhone (iOS 18 o posterior): toque háptico del interruptor del sistema,
   // el único que Safari permite a una web. Necesita que el toque venga directamente del dedo.
   const hapticsOn = () => state.cfg.haptics !== false;
+  const sessionSize = () => {
+    const n = Number(state.cfg.sessionSize);
+    return Number.isFinite(n) && n >= 1 ? Math.round(n) : DEFAULT_SESSION_SIZE;
+  };
   function iosTap() {
     try {
       const label = document.createElement('label');
@@ -155,7 +161,7 @@
         done: false
       };
     }
-    const n = Math.min(SESSION_SIZE, activeItems().length);
+    const n = Math.min(sessionSize(), activeItems().length);
     return { title: 'Pendiente', detail: plural(n, 'pregunta', 'preguntas') + ' para hoy. Necesitas un 80 % para completar el día.', done: false };
   }
 
@@ -166,8 +172,10 @@
     const run = state.run;
     const n = activeItems().length;
     const primary = run
-      ? `<button class="btn btn-primary" data-act="continue">Continuar ${run.kind === 'main' ? 'la sesión' : 'el repaso'} (${run.idx} de ${run.items.length})</button>`
+      ? `<button class="btn btn-primary" data-act="continue">Continuar ${run.kind === 'main' ? '' : 'repaso '}(${run.idx + (run.answered ? 1 : 0)} de ${run.items.length})</button>`
       : `<button class="btn btn-primary" data-act="start" ${n ? '' : 'disabled'}>${sum.sessions.length ? 'Nueva sesión' : 'Empezar sesión'}</button>`;
+    const discard = run
+      ? `<button class="btn btn-quiet" data-act="discard">${run.kind === 'main' ? 'Empezar de nuevo' : 'Dejar el repaso'}</button>` : '';
     const review = !run && sum.pending.length
       ? `<button class="btn" data-act="review">Repasar falladas (${sum.pending.length})</button>` : '';
 
@@ -191,6 +199,7 @@
 
       <div class="home-actions stack">
         ${primary}
+        ${discard}
         ${review}
         <button class="btn" data-act="stats">Estadísticas</button>
       </div>
@@ -225,7 +234,7 @@
   // ---------- Sesiones ----------
   function startSession() {
     const sum = todaySummary();
-    const picked = L.pickSession(activeItems(), sum.askedMain, SESSION_SIZE);
+    const picked = L.pickSession(activeItems(), sum.askedMain, sessionSize());
     if (!picked.length) return;
     state.run = {
       date: today(), kind: 'main', s: sum.nextSession, round: 0,
@@ -595,6 +604,16 @@
       </form>
 
       <section class="section">
+        <h2>Preguntas por sesión</h2>
+        <div class="num-row">
+          <input id="size" class="text-input num-input" type="number" inputmode="numeric" min="1" max="500" step="1" value="${sessionSize()}">
+          <span class="help" style="margin:0">de ${plural(activeItems().length, 'entrada activa', 'entradas activas')}</span>
+        </div>
+        <p class="help">Se aplica a la próxima sesión. Para completar el día necesitas el 80 % de este número (o el 90 % con los repasos).</p>
+        <p class="status-msg ok" id="sizeMsg" role="status" hidden></p>
+      </section>
+
+      <section class="section">
         <h2>Vibración</h2>
         <label class="toggle" for="haptics">
           <input id="haptics" type="checkbox" ${hapticsOn() ? 'checked' : ''}>
@@ -612,6 +631,17 @@
         </div>
       </section>
     `;
+    const sizeEl = document.getElementById('size');
+    sizeEl.addEventListener('change', () => {
+      const n = Math.round(Number(sizeEl.value));
+      const msg = document.getElementById('sizeMsg');
+      if (!Number.isFinite(n) || n < 1) { sizeEl.value = sessionSize(); return; }
+      state.cfg.sessionSize = Math.min(n, 500);
+      save(K.cfg, state.cfg);
+      sizeEl.value = state.cfg.sessionSize;
+      msg.hidden = false;
+      msg.textContent = 'Guardado: ' + plural(state.cfg.sessionSize, 'pregunta', 'preguntas') + ' por sesión.';
+    });
     document.getElementById('haptics').addEventListener('change', ev => {
       state.cfg.haptics = ev.target.checked;
       save(K.cfg, state.cfg);
@@ -720,6 +750,22 @@
   }
 
   // ---------- Eventos ----------
+
+  // Efecto de botón pulsado. Safari en iPhone no aplica :active si la página no escucha los toques,
+  // y además la mayoría de botones redibujan la pantalla al soltar: por eso se marca al tocar.
+  const PRESSABLE = 'button, .btn, .toggle';
+  let pressed = null;
+  function release() { if (pressed) { pressed.classList.remove('is-pressed'); pressed = null; } }
+  document.addEventListener('pointerdown', ev => {
+    const el = ev.target.closest(PRESSABLE);
+    if (!el || el.disabled) return;
+    release();
+    pressed = el;
+    el.classList.add('is-pressed');
+  }, { passive: true });
+  ['pointerup', 'pointercancel'].forEach(t => document.addEventListener(t, () => setTimeout(release, 90), { passive: true }));
+  document.addEventListener('touchstart', () => {}, { passive: true });
+
   $app.addEventListener('click', ev => {
     const el = ev.target.closest('[data-act]');
     if (!el) return;
@@ -729,11 +775,24 @@
       case 'continue': go('quiz'); focusAnswer(); break;
       case 'review': startReview(); break;
       case 'skip': submitAnswer(''); break;
-      case 'exit': go('home'); break;
+      case 'exit':
+        // Salir sin haber respondido ninguna: no tiene sentido guardarla
+        if (state.run && state.run.idx === 0 && !state.run.answered) { state.run = null; save(K.run, null); }
+        go('home');
+        break;
+      case 'discard':
+        // Las respuestas ya dadas se quedan contadas; solo se descarta lo que faltaba
+        state.run = null; save(K.run, null);
+        go('home');
+        break;
       case 'home': go('home'); break;
       case 'stats': state.calMonth = null; go('stats'); break;
       case 'settings': go('settings'); break;
-      case 'sync': syncAll().then(() => { if (state.view === 'settings') renderSettings(state.sync.error ? { ok: false, text: state.sync.error } : { ok: true, text: 'Sincronizado.' }); }); break;
+      case 'sync':
+        // Mientras sincroniza, el botón lo dice y no se puede volver a pulsar
+        if (el.classList.contains('btn')) { el.disabled = true; el.textContent = 'Sincronizando…'; }
+        syncAll().then(() => { if (state.view === 'settings') renderSettings(state.sync.error ? { ok: false, text: state.sync.error } : { ok: true, text: 'Sincronizado.' }); });
+        break;
       case 'cal-prev': case 'cal-next': {
         const [y, m] = state.calMonth.split('-').map(Number);
         const d = new Date(y, m - 1 + (act === 'cal-prev' ? -1 : 1), 1);
