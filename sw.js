@@ -1,6 +1,6 @@
 /* Guarda la app en el móvil para que funcione sin conexión.
    Al publicar cambios en la app, sube el número de versión. */
-const CACHE = 'dictee-v3';
+const CACHE = 'dictee-v4';
 const FONTS = 'dictee-fonts-v2';
 const ASSETS = [
   './',

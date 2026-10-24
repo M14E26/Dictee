@@ -271,6 +271,38 @@
     return out;
   }
 
+  // ---------- Estadísticas acumuladas (una fila por entrada y una por día) ----------
+
+  function applyAnswer(stats, id, isHit, date) {
+    const s = stats[id] || (stats[id] = { seen: 0, fails: 0, recent: [], last: '' });
+    s.seen++;
+    if (!isHit) s.fails++;
+    s.recent = (s.recent || []).concat([!!isHit]).slice(-3);
+    s.last = date;
+    return s;
+  }
+
+  const isMastered = s => !!s && Array.isArray(s.recent) && s.recent.length === 3 && s.recent.every(Boolean);
+
+  // Fila del día a partir de sus respuestas. Un día ya completado no deja de estarlo.
+  function dayRow(dayEvents, date, prev) {
+    const s = summarizeDay(dayEvents);
+    if (!s.sessions.length) return prev || null;
+    const row = { date, sessions: s.sessions.length, best: s.best, completed: s.completed, via: s.via };
+    if (prev && prev.completed && !row.completed) { row.completed = true; row.via = prev.via; }
+    if (prev && prev.best > row.best) row.best = prev.best;
+    if (prev && prev.sessions > row.sessions) row.sessions = prev.sessions;
+    return row;
+  }
+
+  // Convierte un historial antiguo (una fila por respuesta) en estadísticas acumuladas.
+  function statsFromEvents(events) {
+    const out = {};
+    const evs = events.slice().sort((x, y) => (x.t < y.t ? -1 : x.t > y.t ? 1 : 0));
+    evs.forEach(e => applyAnswer(out, e.id, hit(e), e.d));
+    return out;
+  }
+
   // Elige las preguntas de una sesión: primero las que no han salido hoy.
   function pickSession(activeItems, askedToday, size, rand) {
     rand = rand || Math.random;
@@ -290,7 +322,7 @@
   const api = {
     MAIN_GOAL, RESCUE_GOAL, normBase, stripAccents, editDistance, compareOne, checkAnswer,
     diffMarks, localDate, localDateTime, addDays, summarizeDay, groupByDay, daysTable,
-    streaks, itemStats, pickSession
+    streaks, itemStats, pickSession, applyAnswer, isMastered, dayRow, statsFromEvents
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Logic = api;

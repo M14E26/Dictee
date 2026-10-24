@@ -258,3 +258,5 @@ mark.extra { color: var(--red); text-decoration: line-through 2px; }
 .status-msg.ok { color: var(--good); }
 .status-msg.err { color: var(--red); }
 .danger { color: var(--red); }
+.toggle { display: flex; align-items: center; gap: 12px; font-weight: 600; min-height: 48px; cursor: pointer; }
+.toggle input { width: 24px; height: 24px; accent-color: var(--go); flex: none; margin: 0; }

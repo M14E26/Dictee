@@ -30,7 +30,10 @@
   ].map(([id, es, fr, alts, note]) => ({ id, es, fr, alts: alts ? alts.split('|').map(s => s.trim()).filter(Boolean) : [], active: true, note }));
 
   // ---------- Almacenamiento local ----------
-  const K = { cfg: 'dictee.cfg', vocab: 'dictee.vocab', events: 'dictee.events', run: 'dictee.run', known: 'dictee.known', last: 'dictee.lastRun' };
+  const K = {
+    cfg: 'dictee.cfg', vocab: 'dictee.vocab', events: 'dictee.events', run: 'dictee.run', known: 'dictee.known', last: 'dictee.lastRun',
+    stats: 'dictee.stats', days: 'dictee.days', dirty: 'dictee.dirty'
+  };
   function load(key, fallback) {
     try { const v = localStorage.getItem(key); return v == null ? fallback : JSON.parse(v); } catch (e) { return fallback; }
   }
@@ -41,7 +44,10 @@
   const state = {
     cfg: load(K.cfg, { url: '' }),
     vocab: load(K.vocab, null),          // { items, at, source: 'sheet'|'sample' }
-    events: load(K.events, []),
+    events: load(K.events, []),          // respuestas de hoy y ayer (para las reglas del día)
+    stats: load(K.stats, null),          // { id: { seen, fails, recent, last } }
+    days: load(K.days, null),            // { fecha: { date, sessions, best, completed, via } }
+    dirty: load(K.dirty, { stats: {}, days: {} }), // cambios pendientes de enviar al Sheet
     run: load(K.run, null),
     known: load(K.known, {}),            // copia de todas las entradas vistas alguna vez
     lastRun: load(K.last, null),         // resumen de la última ronda terminada
@@ -61,9 +67,50 @@
   const todayEvents = () => state.events.filter(e => e.d === today());
   const todaySummary = () => L.summarizeDay(todayEvents());
   const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-  const pendingSync = () => state.events.filter(e => !e.x).length;
+  const pendingSync = () => Object.keys(state.dirty.stats).length + Object.keys(state.dirty.days).length;
+
+  // Versión anterior: el historial completo vivía en el móvil. Se convierte una sola vez.
+  if (!state.stats || !state.days) {
+    state.stats = L.statsFromEvents(state.events);
+    state.days = L.daysTable(state.events);
+    Object.keys(state.stats).forEach(id => { state.dirty.stats[id] = 1; });
+    Object.keys(state.days).forEach(d => { state.dirty.days[d] = 1; });
+    save(K.stats, state.stats); save(K.days, state.days); save(K.dirty, state.dirty);
+  }
+  // Solo hacen falta las respuestas de hoy (y de ayer, por si una sesión cruza la medianoche).
+  const yesterday = L.addDays(today(), -1);
+  state.events = state.events.filter(e => e.d >= yesterday).map(e => { const c = Object.assign({}, e); delete c.x; return c; });
+  save(K.events, state.events);
 
   if (state.run && state.run.date !== today()) { state.run = null; save(K.run, null); }
+
+  // ---------- Vibración ----------
+  // Android: vibración real. iPhone (iOS 18 o posterior): toque háptico del interruptor del sistema,
+  // el único que Safari permite a una web. Necesita que el toque venga directamente del dedo.
+  const hapticsOn = () => state.cfg.haptics !== false;
+  function iosTap() {
+    try {
+      const label = document.createElement('label');
+      label.setAttribute('aria-hidden', 'true');
+      label.style.display = 'none';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.setAttribute('switch', '');
+      label.appendChild(input);
+      document.head.appendChild(label);
+      label.click();
+      document.head.removeChild(label);
+    } catch (e) { /* sin vibración */ }
+  }
+  function haptic(kind) {
+    if (!hapticsOn()) return;
+    if (typeof navigator.vibrate === 'function') {
+      try { navigator.vibrate(kind === 'I' ? [40, 80, 40] : 30); } catch (e) {}
+      return;
+    }
+    iosTap();
+    if (kind === 'I') setTimeout(iosTap, 120);
+  }
 
   // ---------- Utilidades de interfaz ----------
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -115,7 +162,7 @@
   function renderHome() {
     const sum = todaySummary();
     const st = dayStatusText(sum);
-    const streak = L.streaks(L.daysTable(state.events), today());
+    const streak = L.streaks(state.days, today());
     const run = state.run;
     const n = activeItems().length;
     const primary = run
@@ -162,7 +209,7 @@
     if (v.at) parts.push('actualizado ' + timeAgo(v.at));
     const p = pendingSync();
     let txt = parts.join(', ') + '.';
-    if (p) txt += ' ' + plural(p, 'respuesta pendiente', 'respuestas pendientes') + ' de enviar.';
+    if (p) txt += ' ' + plural(p, 'cambio pendiente', 'cambios pendientes') + ' de enviar.';
     if (state.sync.error) txt = `<span class="sync-error">${esc(state.sync.error)}</span> ` + txt;
     return txt + ' <button data-act="sync">Actualizar</button>';
   }
@@ -217,17 +264,27 @@
     if (!run || run.answered) return;
     const item = run.items[run.idx];
     const result = L.checkAnswer(text, item);
+    haptic(result.status);
     const e = {
       u: uid(), t: L.localDateTime(), d: run.date, s: item.s, r: run.kind === 'main' ? 0 : run.round,
       n: run.kind === 'main' ? run.items.length : 0, id: item.id, a: text.trim(), res: result.status
     };
     state.events.push(e);
     save(K.events, state.events);
+
+    // Estadísticas acumuladas: la fila de la entrada y la del día
+    L.applyAnswer(state.stats, item.id, result.status !== 'I', run.date);
+    state.dirty.stats[item.id] = (state.dirty.stats[item.id] || 0) + 1;
+    const row = L.dayRow(state.events.filter(x => x.d === run.date), run.date, state.days[run.date]);
+    if (row) { state.days[run.date] = row; state.dirty.days[run.date] = (state.dirty.days[run.date] || 0) + 1; }
+    save(K.stats, state.stats); save(K.days, state.days); save(K.dirty, state.dirty);
+
     if (result.status !== 'I') run.hits++;
     run.answered = { text: text.trim(), result };
     save(K.run, run);
     renderQuiz();
-    if (state.events.filter(x => !x.x).length >= 10) syncPush();
+    state.sinceSync = (state.sinceSync || 0) + 1;
+    if (state.sinceSync >= 10) { state.sinceSync = 0; syncPush(); }
   }
 
   function nextQuestion() {
@@ -386,13 +443,13 @@
   const MONTHS = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
 
   function renderStats() {
-    const days = L.daysTable(state.events);
+    const days = state.days;
     const streak = L.streaks(days, today());
-    const stats = L.itemStats(state.events);
+    const stats = state.stats;
     const active = activeItems();
-    const mastered = active.filter(it => stats[it.id] && stats[it.id].mastered).length;
+    const mastered = active.filter(it => L.isMastered(stats[it.id])).length;
     const byId = {}; state.vocab.items.forEach(it => { byId[it.id] = it; });
-    const fails = Object.values(stats)
+    const fails = Object.keys(stats).map(id => Object.assign({ id }, stats[id]))
       .filter(s => s.fails > 0 && byId[s.id])
       .sort((a, b) => b.fails - a.fails || b.fails / b.seen - a.fails / a.seen)
       .slice(0, 10);
@@ -538,14 +595,28 @@
       </form>
 
       <section class="section">
+        <h2>Vibración</h2>
+        <label class="toggle" for="haptics">
+          <input id="haptics" type="checkbox" ${hapticsOn() ? 'checked' : ''}>
+          <span>Vibrar al comprobar la respuesta</span>
+        </label>
+        <p class="help">Un toque si aciertas y dos si fallas. En iPhone necesita iOS 18 o posterior y la opción <em>Sonidos y vibraciones → Respuesta háptica del sistema</em> activada.</p>
+      </section>
+
+      <section class="section">
         <h2>Datos en este móvil</h2>
-        <p class="help">${plural(state.events.length, 'respuesta guardada', 'respuestas guardadas')}, ${plural(pendingSync(), 'pendiente', 'pendientes')} de enviar al Sheet.</p>
+        <p class="help">Estadísticas de ${plural(Object.keys(state.stats).length, 'entrada', 'entradas')} y ${plural(Object.keys(state.days).length, 'día', 'días')}. ${pendingSync() ? plural(pendingSync(), 'cambio pendiente', 'cambios pendientes') + ' de enviar al Sheet.' : 'Todo enviado al Sheet.'}</p>
         <div class="stack" style="margin-top:12px">
           ${state.cfg.url ? '<button class="btn" data-act="sync">Sincronizar ahora</button>' : ''}
           <button class="btn btn-quiet danger" data-act="reset">Borrar los datos de este móvil</button>
         </div>
       </section>
     `;
+    document.getElementById('haptics').addEventListener('change', ev => {
+      state.cfg.haptics = ev.target.checked;
+      save(K.cfg, state.cfg);
+      if (ev.target.checked) haptic('C');
+    });
     document.getElementById('cfgform').addEventListener('submit', async ev => {
       ev.preventDefault();
       const url = document.getElementById('url').value.trim();
@@ -568,27 +639,26 @@
   }
 
   // ---------- Sincronización con Google Sheets ----------
-  function daysForEvents(evs) {
-    const dates = Array.from(new Set(evs.map(e => e.d)));
-    const all = L.daysTable(state.events);
-    return dates.map(d => all[d]).filter(Boolean);
-  }
-
+  // Envía solo las filas que han cambiado: una por entrada y una por día.
   async function syncPush() {
     if (!state.cfg.url || state.sync.busy || !navigator.onLine) return false;
-    const pending = state.events.filter(e => !e.x);
-    if (!pending.length) return true;
+    if (!pendingSync()) return true;
+    const snap = { stats: Object.assign({}, state.dirty.stats), days: Object.assign({}, state.dirty.days) };
+    const stats = Object.keys(snap.stats).filter(id => state.stats[id])
+      .map(id => Object.assign({ id }, state.stats[id]));
+    const days = Object.keys(snap.days).map(d => state.days[d]).filter(Boolean);
     state.sync.busy = true;
     try {
       const res = await fetch(state.cfg.url, {
         method: 'POST',
-        body: JSON.stringify({ action: 'push', events: pending.map(stripLocal), days: daysForEvents(pending) })
+        body: JSON.stringify({ action: 'push', stats, days })
       });
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || 'respuesta inesperada del Sheet');
-      const sent = new Set(pending.map(e => e.u));
-      state.events.forEach(e => { if (sent.has(e.u)) e.x = 1; });
-      save(K.events, state.events);
+      // Borra lo enviado, salvo lo que haya vuelto a cambiar mientras tanto
+      Object.keys(snap.stats).forEach(id => { if (state.dirty.stats[id] === snap.stats[id]) delete state.dirty.stats[id]; });
+      Object.keys(snap.days).forEach(d => { if (state.dirty.days[d] === snap.days[d]) delete state.dirty.days[d]; });
+      save(K.dirty, state.dirty);
       state.sync.error = '';
       return true;
     } catch (err) {
@@ -598,8 +668,6 @@
       state.sync.busy = false;
     }
   }
-
-  function stripLocal(e) { const c = Object.assign({}, e); delete c.x; return c; }
 
   async function syncPull() {
     if (!state.cfg.url || !navigator.onLine) return false;
@@ -612,14 +680,20 @@
       state.vocab = { items: data.vocab, at: new Date().toISOString(), source: 'sheet' };
       save(K.vocab, state.vocab);
       rememberItems(data.vocab);
-      // Une el historial del Sheet con el del móvil
-      const local = new Map(state.events.map(e => [e.u, e]));
-      (data.events || []).forEach(se => {
-        const e = local.get(se.u);
-        if (e) e.x = 1; else local.set(se.u, Object.assign({}, se, { x: 1 }));
+      // Recupera del Sheet las estadísticas (útil al cambiar de móvil). Lo pendiente de enviar manda.
+      (data.stats || []).forEach(s => {
+        if (s && s.id && !state.dirty.stats[s.id]) {
+          state.stats[s.id] = { seen: s.seen || 0, fails: s.fails || 0, recent: s.recent || [], last: s.last || '' };
+        }
       });
-      state.events = Array.from(local.values()).sort((a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : 0));
-      save(K.events, state.events);
+      (data.days || []).forEach(d => {
+        if (d && d.date && !state.dirty.days[d.date]) {
+          const prev = state.days[d.date];
+          state.days[d.date] = prev && prev.completed && !d.completed ? prev : d;
+        }
+      });
+      save(K.stats, state.stats);
+      save(K.days, state.days);
       state.sync.error = '';
       return true;
     } catch (err) {
@@ -668,7 +742,7 @@
         break;
       }
       case 'reset':
-        if (confirm('Se borrarán el vocabulario, las respuestas y los ajustes guardados en este móvil. Lo que ya esté en el Google Sheet no se toca. ¿Continuar?')) {
+        if (confirm('Se borrarán el vocabulario, las estadísticas y los ajustes guardados en este móvil. Lo que ya esté en el Google Sheet no se toca. ¿Continuar?')) {
           Object.values(K).forEach(k => localStorage.removeItem(k));
           location.reload();
         }
@@ -693,6 +767,9 @@
   setInterval(() => {
     if (today() !== lastDay) {
       lastDay = today();
+      const y = L.addDays(lastDay, -1);
+      state.events = state.events.filter(e => e.d >= y);
+      save(K.events, state.events);
       if (state.run && state.run.date !== lastDay && !state.run.answered && state.run.idx === 0) { state.run = null; save(K.run, null); }
       if (state.view === 'home') render();
     }
