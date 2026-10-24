@@ -2,7 +2,7 @@
 (function () {
   'use strict';
   const L = window.Logic;
-  const SESSION_SIZE = 50;
+  const SESSION_SIZE = 25;
   const $app = document.getElementById('app');
 
   // ---------- Vocabulario de ejemplo (el mismo que crea el script del Sheet) ----------
